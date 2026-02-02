@@ -1,0 +1,38 @@
+[
+  {
+    "id": "net_001",
+    "name": "检查SSH配置安全性",
+    "category": "network",
+    "risk_level": "high",
+    "description": "检查SSH是否禁用root登录",
+    "check_command": "grep '^PermitRootLogin' /etc/ssh/sshd_config | awk '{print $2}'",
+    "validation": {
+      "type": "equals",
+      "expected": "no",
+      "compliant_when": "SSH禁用root登录"
+    },
+    "fix_suggestion": "在/etc/ssh/sshd_config中设置PermitRootLogin no",
+    "references": [
+      "CIS Linux Benchmark 5.2.8"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "net_002",
+    "name": "检查防火墙状态",
+    "category": "network",
+    "risk_level": "medium",
+    "description": "检查系统防火墙是否启用",
+    "check_command": "systemctl is-active firewalld || systemctl is-active iptables",
+    "validation": {
+      "type": "contains",
+      "expected": "active",
+      "compliant_when": "防火墙已启用"
+    },
+    "fix_suggestion": "启用并配置防火墙: systemctl enable --now firewalld",
+    "references": [
+      "Security Configuration Guide"
+    ],
+    "enabled": true
+  }
+]

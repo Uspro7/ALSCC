@@ -1,0 +1,38 @@
+[
+  {
+    "id": "sys_001",
+    "name": "检查是否安装开发工具",
+    "category": "system",
+    "risk_level": "medium",
+    "description": "检查系统是否安装了开发工具包，生产环境不应安装开发工具",
+    "check_command": "rpm -qa | grep -E '^(gcc|make|gdb|strace)' | wc -l",
+    "validation": {
+      "type": "equals",
+      "expected": "0",
+      "compliant_when": "未安装开发工具"
+    },
+    "fix_suggestion": "卸载不必要的开发工具: yum remove gcc make gdb strace",
+    "references": [
+      "CIS Linux Benchmark"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "sys_002",
+    "name": "检查系统内核版本",
+    "category": "system",
+    "risk_level": "high",
+    "description": "检查系统内核版本是否为最新",
+    "check_command": "uname -r",
+    "validation": {
+      "type": "regex",
+      "expected": "^[0-9]+\\.[0-9]+\\.[0-9]+",
+      "compliant_when": "内核版本格式正确"
+    },
+    "fix_suggestion": "更新系统内核到最新版本",
+    "references": [
+      "Security Best Practices"
+    ],
+    "enabled": true
+  }
+]

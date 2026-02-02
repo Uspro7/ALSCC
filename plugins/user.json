@@ -1,0 +1,38 @@
+[
+  {
+    "id": "user_001",
+    "name": "检查空密码账户",
+    "category": "user",
+    "risk_level": "critical",
+    "description": "检查系统中是否存在空密码的用户账户",
+    "check_command": "awk -F: '($2 == \"\") {print $1}' /etc/shadow | wc -l",
+    "validation": {
+      "type": "equals",
+      "expected": "0",
+      "compliant_when": "无空密码账户"
+    },
+    "fix_suggestion": "为空密码账户设置密码或禁用账户",
+    "references": [
+      "CIS Linux Benchmark 5.4.2"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "user_002",
+    "name": "检查root账户登录限制",
+    "category": "user",
+    "risk_level": "high",
+    "description": "检查root账户是否限制了登录方式",
+    "check_command": "grep '^root:' /etc/passwd | cut -d: -f7",
+    "validation": {
+      "type": "not_equals",
+      "expected": "/bin/bash",
+      "compliant_when": "root账户shell受限"
+    },
+    "fix_suggestion": "限制root账户直接登录，使用sudo提权",
+    "references": [
+      "Security Hardening Guide"
+    ],
+    "enabled": true
+  }
+]
