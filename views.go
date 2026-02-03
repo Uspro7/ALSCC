@@ -21,7 +21,7 @@ func (m model) viewMainMenu() string {
     ║    ██║  ██║███████╗███████║╚██████╗╚██████╗                                   ║
     ║    ╚═╝  ╚═╝╚══════╝╚══════╝ ╚═════╝ ╚═════╝                                   ║
     ║                                                                               ║
-    ║     Aznic Linux Security Compliance Check V1.7                                ║
+    ║     Aznic Linux Security Compliance Check V2.0                                ║
     ║                                                                               ║
     ╚═══════════════════════════════════════════════════════════════════════════════╝`
 	
@@ -42,7 +42,22 @@ func (m model) viewMainMenu() string {
 		warningStyle.Render("状态: 就绪"))
 	s.WriteString(systemInfo)
 	s.WriteString("\n")
-	
+
+	// Root检测开关面板
+	rootStatus := "已禁用"
+	rootStyle := dangerStyle
+	if m.enableRootCheck {
+		rootStatus = "已启用"
+		rootStyle = warningStyle
+	}
+	rootPanel := panelStyle.Render(
+		highlightStyle.Render(" Root用户检测 ") + "\n" +
+		rootStyle.Render("状态: "+rootStatus) + "  " +
+		helpStyle.Render("按R键切换") + "\n" +
+		helpStyle.Render("影响：密码修改/过期检查/弱口令检测"))
+	s.WriteString(rootPanel)
+	s.WriteString("\n")
+
 	// 创建彩色选项列表
 	options := []struct {
 		text  string
@@ -53,7 +68,7 @@ func (m model) viewMainMenu() string {
 		{"检查用户密码过期时间", "检查密码使用时间和过期状态", warningStyle},
 		{"检查登录失败锁定策略", "配置和检查账户锁定策略", dangerStyle},
 		{"系统安全合规检查", "全面的安全配置检查 (72项检查)", successStyle},
-		{"弱口令检测", "检测用户弱口令 (Top1000字典碰撞)", highlightStyle},
+		{"弱口令检测", "检测用户弱口令 (支持自定义字典)", highlightStyle},
 		{"紧急解锁用户账户", "清除所有用户锁定状态", warningStyle},
 		{"退出程序", "安全退出系统", normalStyle},
 	}
@@ -971,6 +986,6 @@ func (m model) viewSecurityCheckResults() string {
 			s.WriteString(warningStyle.Render("[!] " + m.message))
 		}
 	}
-	
+
 	return s.String()
 }

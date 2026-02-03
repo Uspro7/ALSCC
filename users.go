@@ -71,6 +71,84 @@ func getSystemUsers() ([]User, error) {
 	return users, scanner.Err()
 }
 
+// 获取系统用户列表（可选择是否包含root）
+func getSystemUsersWithRoot(includeRoot bool) ([]User, error) {
+	file, err := os.Open("/etc/passwd")
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var users []User
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Split(line, ":")
+
+		if len(fields) < 7 {
+			continue
+		}
+
+		username := fields[0]
+		uidStr := fields[2]
+		shell := fields[6]
+
+		// 根据参数决定是否跳过root用户
+		if username == "root" && !includeRoot {
+			continue
+		}
+
+		// 解析UID
+		uid, err := strconv.Atoi(uidStr)
+		if err != nil {
+			continue
+		}
+
+		// root用户特殊处理
+		if username == "root" && includeRoot {
+			// 获取密码使用天数
+			lastChanged, daysUsed := getPasswordAge(username)
+			user := User{
+				Username:    username,
+				UID:         uid,
+				Shell:       shell,
+				LastChanged: lastChanged,
+				DaysUsed:    daysUsed,
+				Selected:    false,
+			}
+			users = append(users, user)
+			continue
+		}
+
+		// 只处理UID >= 1000的用户
+		if uid < 1000 {
+			continue
+		}
+
+		// 过滤掉nologin和false shell的用户
+		if strings.Contains(shell, "nologin") || strings.Contains(shell, "false") {
+			continue
+		}
+
+		// 获取密码最后修改时间
+		lastChanged, daysUsed := getPasswordAge(username)
+
+		user := User{
+			Username:    username,
+			UID:         uid,
+			Shell:       shell,
+			LastChanged: lastChanged,
+			DaysUsed:    daysUsed,
+			Selected:    false,
+		}
+
+		users = append(users, user)
+	}
+
+	return users, scanner.Err()
+}
+
 // 获取密码使用天数
 func getPasswordAge(username string) (time.Time, int) {
 	cmd := exec.Command("chage", "-l", username)

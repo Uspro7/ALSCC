@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
-	
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -11,6 +13,19 @@ func (m model) updateMainMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c", "esc":
 		return m, tea.Quit
+	case "r", "R":
+		// 切换Root检测开关
+		m.enableRootCheck = !m.enableRootCheck
+		if m.enableRootCheck {
+			m.message = "⚠ 已启用Root用户检测（包含密码修改/过期检查/弱口令检测）"
+		} else {
+			m.message = "✓ 已禁用Root用户检测（安全模式，跳过Root用户）"
+		}
+		// 根据开关状态重新获取用户列表
+		users, err := getSystemUsersWithRoot(m.enableRootCheck)
+		if err == nil {
+			m.users = users
+		}
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -679,7 +694,7 @@ func (m model) updateWeakPasswordCheck(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < 2 {
+		if m.cursor < 3 {
 			m.cursor++
 		}
 	case "enter":
@@ -692,24 +707,31 @@ func (m model) updateWeakPasswordCheck(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.progressCurrent = 0
 			m.progressTotal = 0 // 将在检测函数中设置
 			m.progressMessage = "准备开始弱口令检测..."
-			
+
 			// 切换到结果界面显示进度条
 			m.currentScreen = weakPasswordResults
 			m.cursor = 0
-			
-			// 启动异步弱口令检测
+
+			// 启动异步弱口令检测，传递字典路径和Root开关状态
 			return m, tea.Batch(
-				performWeakPasswordCheckAsync(m.weakPasswordConfig),
+				performWeakPasswordCheckAsync(m.dictionaryFilePath, m.enableRootCheck, m.weakPasswordConfig),
 				tea.Tick(time.Millisecond*200, func(t time.Time) tea.Msg {
 					return t
 				}),
 			)
 		case 1:
+			// 输入字典路径
+			m.currentScreen = weakPasswordDictInput
+			m.inputValue = m.dictionaryFilePath // 预填充当前路径
+			m.inputMode = true
+			m.inputPrompt = "请输入字典文件路径"
+			m.message = ""
+		case 2:
 			// 性能配置调整
 			m.currentScreen = weakPasswordConfig
 			m.cursor = 0
 			m.message = ""
-		case 2:
+		case 3:
 			// 返回主菜单
 			m.currentScreen = mainMenu
 			m.cursor = 0
@@ -743,10 +765,10 @@ func (m model) updateWeakPasswordResults(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.progressCurrent = 0
 		m.progressTotal = 0 // 将在检测函数中设置
 		m.progressMessage = "准备重新开始弱口令检测..."
-		
-		// 启动异步重新检测
+
+		// 启动异步重新检测，传递字典路径和Root开关状态
 		return m, tea.Batch(
-			performWeakPasswordCheckAsync(m.weakPasswordConfig),
+			performWeakPasswordCheckAsync(m.dictionaryFilePath, m.enableRootCheck, m.weakPasswordConfig),
 			tea.Tick(time.Millisecond*200, func(t time.Time) tea.Msg {
 				return t
 			}),
@@ -788,11 +810,11 @@ func (m model) updateWeakPasswordConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < 4 {
+		if m.cursor < 5 {
 			m.cursor++
 		}
 	case "left", "h":
-		// 减少配置值
+		// 减少配置值或切换字典
 		switch m.cursor {
 		case 0: // 并发数
 			if m.weakPasswordConfig.MaxConcurrent > 1 {
@@ -810,9 +832,29 @@ func (m model) updateWeakPasswordConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.weakPasswordConfig.CheckInterval > 50*time.Millisecond {
 				m.weakPasswordConfig.CheckInterval -= 50 * time.Millisecond
 			}
+		case 4: // 字典选择 - 切换到上一个字典
+			if len(m.availableDictionaries) > 0 {
+				// 找到当前字典的索引
+				currentIndex := -1
+				for i, dict := range m.availableDictionaries {
+					if dict == m.dictionaryFilePath {
+						currentIndex = i
+						break
+					}
+				}
+				// 切换到上一个字典（循环）
+				if currentIndex > 0 {
+					m.dictionaryFilePath = m.availableDictionaries[currentIndex-1]
+				} else if currentIndex == 0 {
+					m.dictionaryFilePath = m.availableDictionaries[len(m.availableDictionaries)-1]
+				} else if len(m.availableDictionaries) > 0 {
+					m.dictionaryFilePath = m.availableDictionaries[len(m.availableDictionaries)-1]
+				}
+				m.message = "已选择字典: " + m.dictionaryFilePath
+			}
 		}
 	case "right", "l":
-		// 增加配置值
+		// 增加配置值或切换字典
 		switch m.cursor {
 		case 0: // 并发数
 			if m.weakPasswordConfig.MaxConcurrent < 8 {
@@ -830,17 +872,100 @@ func (m model) updateWeakPasswordConfig(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.weakPasswordConfig.CheckInterval < 1000*time.Millisecond {
 				m.weakPasswordConfig.CheckInterval += 50 * time.Millisecond
 			}
+		case 4: // 字典选择 - 切换到下一个字典
+			if len(m.availableDictionaries) > 0 {
+				// 找到当前字典的索引
+				currentIndex := -1
+				for i, dict := range m.availableDictionaries {
+					if dict == m.dictionaryFilePath {
+						currentIndex = i
+						break
+					}
+				}
+				// 切换到下一个字典（循环）
+				if currentIndex >= 0 && currentIndex < len(m.availableDictionaries)-1 {
+					m.dictionaryFilePath = m.availableDictionaries[currentIndex+1]
+				} else if currentIndex == len(m.availableDictionaries)-1 {
+					m.dictionaryFilePath = m.availableDictionaries[0]
+				} else if len(m.availableDictionaries) > 0 {
+					m.dictionaryFilePath = m.availableDictionaries[0]
+				}
+				m.message = "已选择字典: " + m.dictionaryFilePath
+			}
 		}
 	case "r", "R":
 		// 重置为默认配置
 		m.weakPasswordConfig = getPerformanceConfig()
 		m.message = "已重置为默认配置"
 	case "enter":
-		if m.cursor == 4 {
+		if m.cursor == 5 {
 			// 保存并返回
 			m.currentScreen = weakPasswordCheck
 			m.cursor = 0
-			m.message = "性能配置已保存"
+			m.message = "配置已保存"
+		}
+	}
+	return m, nil
+}
+
+// 字典路径输入界面事件处理
+func (m model) updateWeakPasswordDictInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			// 取消输入，返回弱口令检测界面
+			m.currentScreen = weakPasswordCheck
+			m.cursor = 0
+			m.inputMode = false
+			m.message = ""
+		case "enter":
+			// 验证并保存字典路径
+			inputPath := strings.TrimSpace(m.inputValue)
+			if inputPath == "" {
+				m.message = "字典路径不能为空"
+				return m, nil
+			}
+
+			// 检查文件是否存在
+			if _, err := os.Stat(inputPath); os.IsNotExist(err) {
+				m.message = "文件不存在: " + inputPath
+				return m, nil
+			}
+
+			// 检查文件是否可读
+			file, err := os.Open(inputPath)
+			if err != nil {
+				m.message = "无法读取文件: " + err.Error()
+				return m, nil
+			}
+			file.Close()
+
+			// 保存字典路径
+			m.dictionaryFilePath = inputPath
+			m.currentScreen = weakPasswordCheck
+			m.cursor = 0
+			m.inputMode = false
+			m.message = "✓ 字典已设置: " + inputPath
+		case "backspace":
+			if len(m.inputValue) > 0 {
+				// 支持UTF-8字符删除
+				r := []rune(m.inputValue)
+				if len(r) > 0 {
+					m.inputValue = string(r[:len(r)-1])
+				}
+			}
+		default:
+			// 只接受可打印字符
+			if len(msg.String()) == 1 && msg.String() >= " " && msg.String() <= "~" {
+				m.inputValue += msg.String()
+			}
+			// 也接受一些特殊字符如路径分隔符
+			if len(msg.String()) == 1 && (msg.String() == "/" || msg.String() == "\\" || msg.String() == "." || msg.String() == "-" || msg.String() == "_") {
+				m.inputValue += msg.String()
+			}
 		}
 	}
 	return m, nil

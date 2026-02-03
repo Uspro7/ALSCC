@@ -28,6 +28,7 @@ const (
 	weakPasswordCheck
 	weakPasswordResults
 	weakPasswordConfig
+	weakPasswordDictInput
 )
 
 type passwordType int
@@ -75,8 +76,12 @@ type model struct {
 	securityResults     []SecurityCheckResult
 	selectedChecks      []bool // 选中的检查项
 	// 弱口令检测相关
-	weakPasswordResults []WeakPasswordResult
-	weakPasswordConfig  PerformanceConfig
+	weakPasswordResults  []WeakPasswordResult
+	weakPasswordConfig   PerformanceConfig
+	dictionaryFilePath   string // 当前选择的字典文件路径
+	availableDictionaries []string // 可用的字典文件列表
+	// Root用户检测开关（全局控制）
+	enableRootCheck      bool // 是否启用Root用户检测/修改
 	// 进度条相关
 	progressCurrent     int    // 当前进度
 	progressTotal       int    // 总进度
@@ -127,10 +132,31 @@ func initialModel() model {
 		}
 	}
 
+	// 扫描可用的字典文件
+	dictFiles, _ := scanAvailableDictionaries()
+	defaultDict := "Top1000pass.txt"
+
+	// 如果默认字典不存在，使用第一个找到的字典
+	if len(dictFiles) > 0 {
+		// 检查默认字典是否存在
+		found := false
+		for _, f := range dictFiles {
+			if f == defaultDict {
+				found = true
+				break
+			}
+		}
+		if !found && len(dictFiles) > 0 {
+			defaultDict = dictFiles[0]
+		}
+	}
+
 	return model{
-		currentScreen:      mainMenu,
-		users:             users,
-		generatedPasswords: make(map[string]string),
+		currentScreen:         mainMenu,
+		users:                users,
+		generatedPasswords:   make(map[string]string),
+		dictionaryFilePath:   defaultDict,
+		availableDictionaries: dictFiles,
 	}
 }
 
@@ -243,6 +269,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateWeakPasswordResults(msg)
 		case weakPasswordConfig:
 			return m.updateWeakPasswordConfig(msg)
+		case weakPasswordDictInput:
+			return m.updateWeakPasswordDictInput(msg)
 		}
 	case time.Time:
 		// 处理定时器消息，用于更新动画
@@ -287,6 +315,8 @@ func (m model) View() string {
 		return m.viewWeakPasswordResults()
 	case weakPasswordConfig:
 		return m.viewWeakPasswordConfig()
+	case weakPasswordDictInput:
+		return m.viewWeakPasswordDictInput()
 	}
 	return ""
 }
@@ -484,34 +514,52 @@ var SecurityChecks = []SecurityCheckResult{
 }
 func (m model) viewWeakPasswordCheck() string {
 	var s strings.Builder
-	
+
 	// 彩色标题
 	title := titleStyle.Render("🔍 弱口令检测")
 	s.WriteString(title)
 	s.WriteString("\n\n")
-	
+
+	// 显示当前选择的字典
+	dictPanel := panelStyle.Render(
+		infoStyle.Render(" 当前字典 ") + "\n" +
+		warningStyle.Render(fmt.Sprintf("→ %s", m.dictionaryFilePath)))
+	s.WriteString(dictPanel)
+	s.WriteString("\n")
+
+	// Root检测状态显示
+	rootStatus := "已禁用"
+	rootStyle := successStyle
+	if m.enableRootCheck {
+		rootStatus = "已启用"
+		rootStyle = dangerStyle
+	}
+	rootPanel := panelStyle.Render(
+		infoStyle.Render(" Root用户检测 ") + "\n" +
+		rootStyle.Render("→ "+rootStatus))
+	s.WriteString(rootPanel)
+	s.WriteString("\n")
+
 	// 功能介绍面板
 	introPanel := panelStyle.Render(
 		highlightStyle.Render(" 功能介绍 ") + "\n" +
 		normalStyle.Render("• 自动识别系统用户密码Hash类型 (MD5/SHA256/SHA512/DES)") + "\n" +
-		normalStyle.Render("• 使用Top1000弱口令字典进行碰撞检测") + "\n" +
-		normalStyle.Render("• 包含root用户检测 - 最重要的安全检查") + "\n" +
+		normalStyle.Render("• 支持自定义字典文件进行碰撞检测") + "\n" +
 		normalStyle.Render("• 智能性能调度，避免影响业务运行") + "\n" +
 		normalStyle.Render("• 支持批量检测和实时进度显示"))
 	s.WriteString(introPanel)
 	s.WriteString("\n")
-	
-	// 系统性能配置信息
-	config := getPerformanceConfig()
+
+	// 系统性能配置信息 - 使用当前配置
 	perfPanel := panelStyle.Render(
 		infoStyle.Render(" 性能配置 ") + "\n" +
-		fmt.Sprintf("并发数: %d  |  批处理: %d  |  CPU限制: %.0f%%", 
-			config.MaxConcurrent, config.BatchSize, config.CPULimit*100) + "\n" +
-		fmt.Sprintf("检查间隔: %v  |  优先级: %s", 
-			config.CheckInterval, config.Priority))
+		fmt.Sprintf("并发数: %d  |  批处理: %d  |  CPU限制: %.0f%%",
+			m.weakPasswordConfig.MaxConcurrent, m.weakPasswordConfig.BatchSize, m.weakPasswordConfig.CPULimit*100) + "\n" +
+		fmt.Sprintf("检查间隔: %v  |  优先级: %s",
+			m.weakPasswordConfig.CheckInterval, m.weakPasswordConfig.Priority))
 	s.WriteString(perfPanel)
 	s.WriteString("\n")
-	
+
 	// 安全警告
 	warningPanel := panelStyle.Render(
 		dangerStyle.Render(" [!]  安全警告 ") + "\n" +
@@ -520,14 +568,15 @@ func (m model) viewWeakPasswordCheck() string {
 		warningStyle.Render("• 发现弱口令后请立即要求用户修改密码"))
 	s.WriteString(warningPanel)
 	s.WriteString("\n")
-	
+
 	// 选项列表
 	options := []string{
 		"开始弱口令检测",
+		"输入字典路径",
 		"性能配置调整",
 		"返回主菜单",
 	}
-	
+
 	for i, option := range options {
 		if i == m.cursor {
 			line := selectedStyle.Render("[>] " + option)
@@ -538,8 +587,10 @@ func (m model) viewWeakPasswordCheck() string {
 			case 0:
 				optionStyle = successStyle
 			case 1:
-				optionStyle = infoStyle
+				optionStyle = warningStyle
 			case 2:
+				optionStyle = infoStyle
+			case 3:
 				optionStyle = normalStyle
 			}
 			line := optionStyle.Render("  " + option)
@@ -547,15 +598,15 @@ func (m model) viewWeakPasswordCheck() string {
 		}
 		s.WriteString("\n")
 	}
-	
+
 	s.WriteString("\n")
-	
+
 	// 操作说明面板
 	helpPanel := panelStyle.Render(
 		highlightStyle.Render(" 操作说明 ") + "\n" +
 		helpStyle.Render("↑/↓ 选择选项  Enter 确认  Esc 返回主菜单  q 退出程序"))
 	s.WriteString(helpPanel)
-	
+
 	if m.message != "" {
 		s.WriteString("\n")
 		if strings.Contains(m.message, "成功") || strings.Contains(m.message, "完成") {
@@ -564,7 +615,7 @@ func (m model) viewWeakPasswordCheck() string {
 			s.WriteString(warningStyle.Render("[!] " + m.message))
 		}
 	}
-	
+
 	return s.String()
 }
 
@@ -801,21 +852,27 @@ func (m model) viewWeakPasswordConfig() string {
 			"范围: 50ms-1000ms",
 		},
 		{
+			"字典文件",
+			m.dictionaryFilePath,
+			"当前使用的字典文件",
+			"使用 ←/→ 切换字典",
+		},
+		{
 			"保存配置",
 			"",
 			"保存当前配置并返回",
 			"按Enter确认",
 		},
 	}
-	
+
 	for i, option := range configOptions {
 		prefix := "  "
 		if i == m.cursor {
 			prefix = selectedStyle.Render("▶ ")
 		}
-		
+
 		var line string
-		if i == 4 { // 保存配置选项
+		if i == 5 { // 保存配置选项
 			if i == m.cursor {
 				line = selectedStyle.Render(prefix + option.name)
 			} else {
@@ -826,22 +883,30 @@ func (m model) viewWeakPasswordConfig() string {
 			if i == m.cursor {
 				nameStyle = selectedStyle
 			}
-			
-			line = fmt.Sprintf("%s%s: %s",
-				prefix,
-				nameStyle.Render(option.name),
-				highlightStyle.Render(option.value))
+
+			// 字典文件选项使用不同颜色
+			if i == 4 {
+				line = fmt.Sprintf("%s%s: %s",
+					prefix,
+					warningStyle.Render(option.name),
+					warningStyle.Render(option.value))
+			} else {
+				line = fmt.Sprintf("%s%s: %s",
+					prefix,
+					nameStyle.Render(option.name),
+					highlightStyle.Render(option.value))
+			}
 		}
-		
+
 		s.WriteString(line)
 		s.WriteString("\n")
-		
+
 		// 显示当前选中项的详细信息
-		if i == m.cursor && i < 4 {
+		if i == m.cursor && i < 5 {
 			detailsContent := helpStyle.Render("描述: ") + normalStyle.Render(option.description) + "\n" +
 				helpStyle.Render(option.range_info) + "\n" +
-				helpStyle.Render("使用 ←/→ 键调整数值")
-			
+				helpStyle.Render("使用 ←/→ 键调整")
+
 			detailsPanel := borderStyle.Render(detailsContent)
 			s.WriteString(detailsPanel)
 			s.WriteString("\n")
@@ -886,6 +951,58 @@ func (m model) viewWeakPasswordConfig() string {
 	
 	return s.String()
 }
+
+// 字典路径输入界面
+func (m model) viewWeakPasswordDictInput() string {
+	var s strings.Builder
+
+	// 彩色标题
+	title := titleStyle.Render("输入字典文件路径")
+	s.WriteString(title)
+	s.WriteString("\n\n")
+
+	// 当前字典显示
+	currentDictPanel := panelStyle.Render(
+		infoStyle.Render(" 当前字典 ") + "\n" +
+		normalStyle.Render(fmt.Sprintf("→ %s", m.dictionaryFilePath)))
+	s.WriteString(currentDictPanel)
+	s.WriteString("\n\n")
+
+	// 输入提示
+	promptPanel := panelStyle.Render(
+		highlightStyle.Render(" 请输入字典文件路径 ") + "\n" +
+		helpStyle.Render("• 支持相对路径或绝对路径") + "\n" +
+		helpStyle.Render("• 示例: Top1000pass.txt 或 /opt/dicts/passwords.txt"))
+	s.WriteString(promptPanel)
+	s.WriteString("\n\n")
+
+	// 输入框
+	inputLabel := normalStyle.Render("路径: ")
+	inputContent := highlightStyle.Render(m.inputValue)
+	if m.inputMode {
+		inputContent += selectedStyle.Render("█")
+	}
+	inputLine := inputLabel + inputContent
+	s.WriteString(borderStyle.Render(inputLine))
+	s.WriteString("\n\n")
+
+	// 错误消息
+	if m.message != "" {
+		errorPanel := dangerStyle.Render(" [!] " + m.message)
+		s.WriteString(errorPanel)
+		s.WriteString("\n\n")
+	}
+
+	// 操作说明
+	helpPanel := panelStyle.Render(
+		highlightStyle.Render(" 操作说明 ") + "\n" +
+		helpStyle.Render("直接输入路径，完成后按 Enter 确认") + "\n" +
+		helpStyle.Render("Esc 取消并返回  q 退出程序"))
+	s.WriteString(helpPanel)
+
+	return s.String()
+}
+
 // 渲染进度条
 func (m model) renderProgressBar() string {
 	var s strings.Builder

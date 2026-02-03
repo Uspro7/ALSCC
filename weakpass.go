@@ -276,6 +276,11 @@ func identifyHashType(hash string) HashInfo {
 
 // 读取shadow文件获取用户密码Hash
 func getShadowHashes() (map[string]string, error) {
+	return getShadowHashesWithRoot(false)
+}
+
+// 读取shadow文件获取用户密码Hash（可选择是否包含root）
+func getShadowHashesWithRoot(includeRoot bool) (map[string]string, error) {
 	file, err := os.Open("/etc/shadow")
 	if err != nil {
 		return nil, fmt.Errorf("无法读取/etc/shadow文件: %v (需要root权限)", err)
@@ -296,8 +301,12 @@ func getShadowHashes() (map[string]string, error) {
 			username := fields[0]
 			hash := fields[1]
 
-			// 跳过大部分系统账户和禁用账户，但保留root用户进行弱口令检测
-			// root用户的弱口令是最严重的安全风险
+			// 根据参数决定是否包含root用户
+			if username == "root" && !includeRoot {
+				continue
+			}
+
+			// 跳过系统账户和禁用账户
 			if !isSystemAccount(username) && hash != "*" && hash != "!" && hash != "!!" && hash != "" {
 				hashes[username] = hash
 			}
@@ -309,9 +318,9 @@ func getShadowHashes() (map[string]string, error) {
 
 // 判断是否为系统账户
 func isSystemAccount(username string) bool {
-	// root用户虽然是系统账户，但需要进行弱口令检测，所以不跳过
+	// root用户需要特殊处理（由调用者决定是否包含）
 	if username == "root" {
-		return false
+		return false // 这里返回false，由调用者决定是否包含
 	}
 	
 	systemAccounts := []string{
@@ -342,7 +351,12 @@ func isSystemAccount(username string) bool {
 
 // 读取弱口令字典
 func loadWeakPasswords() ([]string, error) {
-	file, err := os.Open("Top1000pass.txt")
+	return loadWeakPasswordsFromFile("Top1000pass.txt")
+}
+
+// 从指定文件读取弱口令字典
+func loadWeakPasswordsFromFile(filepath string) ([]string, error) {
+	file, err := os.Open(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("无法读取弱口令字典文件: %v", err)
 	}
@@ -359,6 +373,31 @@ func loadWeakPasswords() ([]string, error) {
 	}
 
 	return passwords, scanner.Err()
+}
+
+// 扫描当前目录下的字典文件
+func scanAvailableDictionaries() ([]string, error) {
+	var dictFiles []string
+
+	// 扫描当前目录
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return nil, fmt.Errorf("无法读取当前目录: %v", err)
+	}
+
+	// 查找所有.txt文件
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".txt") {
+			// 过滤掉一些明显不是字典的文件
+			name := entry.Name()
+			// 排除一些非字典文件
+			if !strings.Contains(name, "report") && !strings.Contains(name, "log") {
+				dictFiles = append(dictFiles, name)
+			}
+		}
+	}
+
+	return dictFiles, nil
 }
 
 // 生成密码Hash (纯Go实现)
@@ -627,7 +666,7 @@ func saveWeakPasswordReport(m *model) error {
 	fmt.Fprintf(writer, "===================\n\n")
 	fmt.Fprintf(writer, "检测时间: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(writer, "检测主机: %s\n", getHostname())
-	fmt.Fprintf(writer, "字典文件: Top1000pass.txt\n\n")
+	fmt.Fprintf(writer, "字典文件: %s\n\n", m.dictionaryFilePath)
 
 	// 统计信息
 	totalUsers := len(m.weakPasswordResults)
@@ -789,34 +828,34 @@ func performWeakPasswordCheckWithProgress(m *model) error {
 	return nil
 }
 // 异步弱口令检测命令 - 步骤式执行
-func performWeakPasswordCheckAsync(config PerformanceConfig) tea.Cmd {
+func performWeakPasswordCheckAsync(dictPath string, enableRoot bool, config PerformanceConfig) tea.Cmd {
 	return func() tea.Msg {
-		// 读取真实的shadow文件
-		hashes, err := getShadowHashes()
+		// 读取真实的shadow文件（根据enableRoot决定是否包含root）
+		hashes, err := getShadowHashesWithRoot(enableRoot)
 		if err != nil {
 			return completeMsg{results: []WeakPasswordResult{}, err: err}
 		}
-		
+
 		if len(hashes) == 0 {
 			return completeMsg{results: []WeakPasswordResult{}, err: fmt.Errorf("未找到可检测的用户账户")}
 		}
-		
-		// 读取弱口令字典
-		passwords, err := loadWeakPasswords()
+
+		// 读取弱口令字典（使用指定的字典路径）
+		passwords, err := loadWeakPasswordsFromFile(dictPath)
 		if err != nil {
 			return completeMsg{results: []WeakPasswordResult{}, err: err}
 		}
-		
+
 		if len(passwords) == 0 {
 			return completeMsg{results: []WeakPasswordResult{}, err: fmt.Errorf("弱口令字典为空")}
 		}
-		
+
 		// 准备用户名列表
 		usernames := make([]string, 0, len(hashes))
 		for username := range hashes {
 			usernames = append(usernames, username)
 		}
-		
+
 		// 开始第一步
 		return weakPasswordStepMsg{
 			stepIndex: 0,
